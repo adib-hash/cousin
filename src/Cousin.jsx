@@ -255,36 +255,116 @@ const CITIES = [
   { city: "Kingston", country: "Jamaica", tz: "America/Jamaica" },
 ];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Weekend Timezones (Fri–Sat) ──────────────────────────────────────────────
+// Countries where the weekend is Friday–Saturday rather than Saturday–Sunday
+const FRI_SAT_TZS = new Set([
+  "Asia/Dubai","Asia/Riyadh","Asia/Qatar","Asia/Kuwait","Asia/Bahrain",
+  "Asia/Muscat","Asia/Amman","Africa/Cairo","Asia/Baghdad","Asia/Tehran",
+  "Asia/Kabul","Africa/Tripoli","Africa/Algiers","Africa/Tunis",
+  "Africa/Khartoum","Asia/Aden","Asia/Damascus",
+]);
 
-function getLocalTime(tz, format = "display") {
+// ─── Core Time Helpers ────────────────────────────────────────────────────────
+
+function getTimeAt(tz, date, format = "display") {
   try {
-    const now = new Date();
-    if (format === "hour") {
-      return parseInt(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(now));
-    }
-    return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(now);
+    if (format === "hour") return parseInt(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(date));
+    return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(date);
   } catch { return format === "hour" ? 12 : "--:--"; }
 }
 
-function isGoodTimeToCall(tz) {
-  const h = getLocalTime(tz, "hour");
-  return h >= 8 && h < 21;
+function getDayShort(tz, date) {
+  try { return new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date); }
+  catch { return "Mon"; }
 }
 
-function getCallScore(tz) {
-  const h = getLocalTime(tz, "hour");
-  if (h < 8 || h >= 21) return -1;
-  return 100 - Math.abs(h - 17) * 4;
+function isWeekend(tz, date) {
+  const day = getDayShort(tz, date);
+  return FRI_SAT_TZS.has(tz) ? (day === "Fri" || day === "Sat") : (day === "Sat" || day === "Sun");
 }
 
-function getTimeStatus(tz) {
-  const h = getLocalTime(tz, "hour");
-  if (h >= 22 || h < 6)  return { label: "asleep",       green: false };
-  if (h < 8)             return { label: "early morning", green: false };
-  if (h >= 20)           return { label: "late evening",  green: false };
-  if (h >= 18)           return { label: "evening",       green: true  };
-  return                        { label: "good time",     green: true  };
+// Main availability check — returns status object used for display + sorting
+function getCallStatus(tz, date, busyDuringWork = false) {
+  const h = getTimeAt(tz, date, "hour");
+  const weekend = isWeekend(tz, date);
+  const day = getDayShort(tz, date);
+
+  if (h >= 23 || h < 6)  return { label: "asleep",          green: false, score: -10, dim: true };
+  if (h < 8)             return { label: "early morning",   green: false, score: -5,  dim: true };
+  if (h >= 21)           return { label: "late evening",    green: false, score: -3,  dim: false };
+  if (busyDuringWork && !weekend && h >= 9 && h < 17)
+                         return { label: "work/school hrs", green: false, score: -2,  dim: false };
+
+  const base = 100 - Math.abs(h - 17) * 4;
+  const weekendBonus = weekend ? 15 : 0;
+  const score = base + weekendBonus;
+  const dayLabel = weekend ? `${day} · free` : h >= 18 ? "evening" : "good time";
+  return { label: dayLabel, green: true, score, dim: false };
+}
+
+// Find overlapping sweet-spot window (next 24h from simulatedNow)
+// Returns null or { myStart, myEnd, theirStart, theirEnd, hours }
+function getSweetSpot(myTz, contactTz, contactBusy, simulatedNow) {
+  const myH = getTimeAt(myTz, simulatedNow, "hour");
+
+  const slots = [];
+  for (let offset = 0; offset < 24; offset++) {
+    const t = new Date(simulatedNow.getTime() + offset * 3600000);
+    const myHour = (myH + offset) % 24;
+    const myFree = myHour >= 8 && myHour < 22;
+    const cStatus = getCallStatus(contactTz, t, contactBusy);
+    slots.push({ offset, myHour, both: myFree && cStatus.green });
+  }
+
+  // Find contiguous free blocks
+  const blocks = [];
+  let cur = null;
+  for (const s of slots) {
+    if (s.both) {
+      if (!cur) cur = { startOffset: s.offset, startHour: s.myHour, len: 0 };
+      cur.len++;
+    } else {
+      if (cur) { blocks.push(cur); cur = null; }
+    }
+  }
+  if (cur) blocks.push(cur);
+  if (!blocks.length) return null;
+
+  // Pick longest block, break ties by proximity to evening
+  const best = [...blocks].sort((a, b) => {
+    if (b.len !== a.len) return b.len - a.len;
+    return Math.abs(a.startHour - 18) - Math.abs(b.startHour - 18);
+  })[0];
+
+  const fmt = h => {
+    if (h === 0 || h === 24) return "12 AM";
+    if (h === 12) return "12 PM";
+    return h > 12 ? `${h - 12} PM` : `${h} AM`;
+  };
+
+  const tStart = new Date(simulatedNow.getTime() + best.startOffset * 3600000);
+  const tEnd   = new Date(simulatedNow.getTime() + (best.startOffset + best.len) * 3600000);
+  const theirStartH = getTimeAt(contactTz, tStart, "hour");
+  const theirEndH   = getTimeAt(contactTz, tEnd,   "hour");
+
+  return {
+    myStart:    fmt(best.startHour),
+    myEnd:      fmt((best.startHour + best.len) % 24),
+    theirStart: fmt(theirStartH),
+    theirEnd:   fmt(theirEndH),
+    hours:      best.len,
+  };
+}
+
+// Generate a one-tap copy message
+function buildCopyMessage(myCity, myTz, contactName, contactCity, contactTz, simulatedNow, realNow) {
+  const myTimeStr     = getTimeAt(myTz, simulatedNow);
+  const theirTimeStr  = getTimeAt(contactTz, simulatedNow);
+  const myDayNow      = getDayShort(myTz, realNow);
+  const myDaySim      = getDayShort(myTz, simulatedNow);
+  const dayRef        = myDaySim === myDayNow ? "today" : "tomorrow";
+  const firstName     = contactName.split(" ")[0];
+  return `Hey ${firstName}! Thinking of you and wanted to catch up. I'm free ${dayRef} at ${myTimeStr} (${myCity} time) — that's ${theirTimeStr} for you in ${contactCity}. Does that work? 😊`;
 }
 
 function getWeeklySuggestions(contacts, count = 3) {
@@ -297,14 +377,38 @@ function getWeeklySuggestions(contacts, count = 3) {
   return new Set(sorted.slice(0, Math.min(count, contacts.length)).map(c => c.id));
 }
 
-function initials(name) {
-  return name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-}
+function initials(name) { return name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase(); }
 
 function avatarColors(name) {
   const hue = (name.charCodeAt(0) * 47 + (name.charCodeAt(1) || 0) * 13) % 360;
   return { bg: `hsl(${hue},28%,88%)`, fg: `hsl(${hue},35%,30%)` };
 }
+
+// ─── Shared Styles ────────────────────────────────────────────────────────────
+
+const fieldStyle = {
+  width: "100%", padding: "9px 12px", border: "1.5px solid #e2e8f0",
+  borderRadius: "8px", background: "#fff", color: "#0f172a",
+  fontFamily: "'DM Sans', sans-serif", fontSize: "14px",
+  outline: "none", boxSizing: "border-box", transition: "border-color 0.15s",
+};
+
+const mLabel = {
+  display: "block", fontSize: "13px", fontWeight: "500",
+  color: "#64748b", marginBottom: "5px", fontFamily: "'DM Sans', sans-serif",
+};
+
+const pill = (bg, color) => ({
+  fontSize: "10px", fontFamily: "'DM Sans', sans-serif", fontWeight: "600",
+  letterSpacing: "0.3px", background: bg, color, padding: "2px 7px",
+  borderRadius: "20px", textTransform: "uppercase", whiteSpace: "nowrap",
+});
+
+const actionBtn = (bg, color, borderColor) => ({
+  padding: "6px 14px", border: `1px solid ${borderColor}`,
+  borderRadius: "6px", background: bg, cursor: "pointer",
+  fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color, fontWeight: "500",
+});
 
 // ─── City Autocomplete ────────────────────────────────────────────────────────
 
@@ -328,12 +432,10 @@ function CityAutocomplete({ value, onChange, onSelect, placeholder }) {
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <input
-        value={query}
+      <input value={query}
         onChange={e => { setQuery(e.target.value); onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        placeholder={placeholder}
-        style={fieldStyle}
+        placeholder={placeholder} style={fieldStyle}
         onFocus={e => e.target.style.borderColor = "#6366f1"}
         onBlur={e => e.target.style.borderColor = "#e2e8f0"}
       />
@@ -341,23 +443,20 @@ function CityAutocomplete({ value, onChange, onSelect, placeholder }) {
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 999,
           background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px",
-          maxHeight: "220px", overflowY: "auto",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+          maxHeight: "220px", overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
         }}>
           {results.map((c, i) => (
-            <div key={i}
-              onMouseDown={() => { setQuery(c.city); onSelect(c); setOpen(false); }}
+            <div key={i} onMouseDown={() => { setQuery(c.city); onSelect(c); setOpen(false); }}
               style={{
                 padding: "9px 14px", cursor: "pointer",
                 display: "flex", justifyContent: "space-between",
                 borderBottom: i < results.length - 1 ? "1px solid #f1f5f9" : "none",
-                fontFamily: "'DM Sans', sans-serif",
               }}
               onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}
             >
-              <span style={{ fontSize: "14px", color: "#0f172a" }}>{c.city}</span>
-              <span style={{ fontSize: "12px", color: "#94a3b8" }}>{c.country}</span>
+              <span style={{ fontSize: "14px", color: "#0f172a", fontFamily: "'DM Sans', sans-serif" }}>{c.city}</span>
+              <span style={{ fontSize: "12px", color: "#94a3b8", fontFamily: "'DM Sans', sans-serif" }}>{c.country}</span>
             </div>
           ))}
         </div>
@@ -365,13 +464,6 @@ function CityAutocomplete({ value, onChange, onSelect, placeholder }) {
     </div>
   );
 }
-
-const fieldStyle = {
-  width: "100%", padding: "9px 12px", border: "1.5px solid #e2e8f0",
-  borderRadius: "8px", background: "#fff", color: "#0f172a",
-  fontFamily: "'DM Sans', sans-serif", fontSize: "14px",
-  outline: "none", boxSizing: "border-box", transition: "border-color 0.15s",
-};
 
 // ─── Contact Modal ────────────────────────────────────────────────────────────
 
@@ -382,27 +474,23 @@ function ContactModal({ contact, onSave, onClose }) {
     tz: contact?.tz || "",
     relationship: contact?.relationship || "",
     notes: contact?.notes || "",
+    busyDuringWork: contact?.busyDuringWork ?? false,
   });
   const [citySearch, setCitySearch] = useState(contact?.city || "");
   const valid = form.name.trim() && form.tz;
 
   return (
-    <div
-      style={{
-        position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        zIndex: 1000, padding: "20px", backdropFilter: "blur(4px)",
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          background: "#fff", borderRadius: "16px", padding: "28px",
-          width: "100%", maxWidth: "430px",
-          boxShadow: "0 24px 60px rgba(0,0,0,0.13)",
-        }}
-        onClick={e => e.stopPropagation()}
-      >
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 1000, padding: "20px", backdropFilter: "blur(4px)",
+    }} onClick={onClose}>
+      <div style={{
+        background: "#fff", borderRadius: "16px", padding: "28px",
+        width: "100%", maxWidth: "430px",
+        boxShadow: "0 24px 60px rgba(0,0,0,0.13)",
+      }} onClick={e => e.stopPropagation()}>
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "22px" }}>
           <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "600", color: "#0f172a", fontFamily: "'DM Sans', sans-serif" }}>
             {contact ? "Edit contact" : "Add a loved one"}
@@ -411,6 +499,7 @@ function ContactModal({ contact, onSave, onClose }) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "13px" }}>
+
           {[
             { key: "name", label: "Name", ph: "Full name", req: true },
             { key: "relationship", label: "Relationship", ph: "Mom, Uncle Tariq, college friend…" },
@@ -434,22 +523,39 @@ function ContactModal({ contact, onSave, onClose }) {
             />
             {form.tz && (
               <div style={{ marginTop: "4px", fontSize: "12px", color: "#10b981", fontFamily: "'DM Sans', sans-serif" }}>
-                ✓ {getLocalTime(form.tz)} local time right now
+                ✓ {getTimeAt(form.tz, new Date())} local time right now
               </div>
             )}
           </div>
 
           <div>
             <label style={mLabel}>Notes & topics to discuss</label>
-            <textarea
-              value={form.notes}
+            <textarea value={form.notes}
               onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
               placeholder="Ask about the new job, Eid plans, the house search…"
-              rows={3}
-              style={{ ...fieldStyle, resize: "vertical", lineHeight: 1.6 }}
+              rows={3} style={{ ...fieldStyle, resize: "vertical", lineHeight: 1.6 }}
               onFocus={e => e.target.style.borderColor = "#6366f1"}
-              onBlur={e => e.target.style.borderColor = "#e2e8f0"}
+              onBlur={e => e.target.style.borderColor = "#e2e8f0"} />
+          </div>
+
+          {/* Busy during work/school hours toggle */}
+          <div style={{
+            display: "flex", alignItems: "flex-start", gap: "10px",
+            background: "#f8fafc", borderRadius: "8px", padding: "12px",
+            border: "1px solid #f1f5f9",
+          }}>
+            <input
+              type="checkbox"
+              id="busyCheck"
+              checked={form.busyDuringWork}
+              onChange={e => setForm(f => ({ ...f, busyDuringWork: e.target.checked }))}
+              style={{ marginTop: "2px", accentColor: "#6366f1", width: "15px", height: "15px", cursor: "pointer", flexShrink: 0 }}
             />
+            <label htmlFor="busyCheck" style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#475569", cursor: "pointer", lineHeight: 1.5 }}>
+              <strong style={{ color: "#0f172a" }}>Busy during school/work hours</strong>
+              <br />
+              <span style={{ color: "#94a3b8" }}>9 AM–5 PM on weekdays won't count as a good time to call</span>
+            </label>
           </div>
         </div>
 
@@ -459,17 +565,14 @@ function ContactModal({ contact, onSave, onClose }) {
             borderRadius: "8px", background: "#fff", cursor: "pointer",
             fontFamily: "'DM Sans', sans-serif", fontSize: "14px", color: "#64748b", fontWeight: "500",
           }}>Cancel</button>
-          <button
-            disabled={!valid}
-            onClick={() => valid && onSave(form)}
-            style={{
-              flex: 2, padding: "10px", border: "none", borderRadius: "8px",
-              background: valid ? "#6366f1" : "#f1f5f9",
-              cursor: valid ? "pointer" : "not-allowed",
-              fontFamily: "'DM Sans', sans-serif", fontSize: "14px",
-              fontWeight: "600", color: valid ? "#fff" : "#94a3b8",
-              transition: "background 0.15s",
-            }}
+          <button disabled={!valid} onClick={() => valid && onSave(form)} style={{
+            flex: 2, padding: "10px", border: "none", borderRadius: "8px",
+            background: valid ? "#6366f1" : "#f1f5f9",
+            cursor: valid ? "pointer" : "not-allowed",
+            fontFamily: "'DM Sans', sans-serif", fontSize: "14px",
+            fontWeight: "600", color: valid ? "#fff" : "#94a3b8",
+            transition: "background 0.15s",
+          }}
             onMouseEnter={e => { if (valid) e.currentTarget.style.background = "#4f46e5"; }}
             onMouseLeave={e => { if (valid) e.currentTarget.style.background = "#6366f1"; }}
           >{contact ? "Save changes" : "Add contact"}</button>
@@ -479,33 +582,38 @@ function ContactModal({ contact, onSave, onClose }) {
   );
 }
 
-const mLabel = {
-  display: "block", fontSize: "13px", fontWeight: "500",
-  color: "#64748b", marginBottom: "5px", fontFamily: "'DM Sans', sans-serif",
-};
-
 // ─── Contact Row ──────────────────────────────────────────────────────────────
 
-function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested }) {
+function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, simulatedNow, realNow, myCity, myTz }) {
   const [expanded, setExpanded] = useState(false);
-  const time = getLocalTime(contact.tz);
-  const status = getTimeStatus(contact.tz);
-  const av = avatarColors(contact.name);
+  const [copied, setCopied] = useState(false);
+
+  const status    = getCallStatus(contact.tz, simulatedNow, contact.busyDuringWork);
+  const time      = getTimeAt(contact.tz, simulatedNow);
+  const weekend   = isWeekend(contact.tz, simulatedNow);
+  const sweetSpot = getSweetSpot(myTz, contact.tz, contact.busyDuringWork, simulatedNow);
+  const av        = avatarColors(contact.name);
+
+  function handleCopy(e) {
+    e.stopPropagation();
+    const msg = buildCopyMessage(myCity, myTz, contact.name, contact.city, contact.tz, simulatedNow, realNow);
+    navigator.clipboard.writeText(msg).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   return (
     <div style={{
       background: isHighlighted ? "#f0f0fe" : "#fff",
       border: `1px solid ${isHighlighted ? "#c7d2fe" : "#f1f5f9"}`,
-      borderRadius: "10px",
-      transition: "border-color 0.15s",
+      borderRadius: "10px", transition: "border-color 0.15s",
+      opacity: status.dim ? 0.6 : 1,
     }}>
-      <div
-        onClick={() => setExpanded(e => !e)}
-        style={{
-          display: "flex", alignItems: "center", gap: "12px",
-          padding: "13px 15px", cursor: "pointer", userSelect: "none",
-        }}
-      >
+      <div onClick={() => setExpanded(e => !e)} style={{
+        display: "flex", alignItems: "center", gap: "12px",
+        padding: "13px 15px", cursor: "pointer", userSelect: "none",
+      }}>
         {/* Avatar */}
         <div style={{
           width: "38px", height: "38px", borderRadius: "50%", flexShrink: 0,
@@ -526,23 +634,21 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested }) {
 
         {/* Name + meta */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap" }}>
             <span style={{ fontFamily: "'DM Sans', sans-serif", fontWeight: "600", fontSize: "14px", color: "#0f172a" }}>
               {contact.name}
             </span>
-            {isSuggested && !isHighlighted && (
-              <span style={pill("#eef2ff", "#6366f1")}>this week</span>
-            )}
-            {isHighlighted && (
-              <span style={pill("#6366f1", "#fff")}>suggested</span>
-            )}
+            {isSuggested && !isHighlighted && <span style={pill("#eef2ff", "#6366f1")}>this week</span>}
+            {isHighlighted && <span style={pill("#6366f1", "#fff")}>suggested</span>}
+            {weekend && <span style={pill("#f0fdf4", "#16a34a")}>weekend</span>}
           </div>
           <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#94a3b8", marginTop: "1px" }}>
             {contact.city}{contact.relationship ? ` · ${contact.relationship}` : ""}
+            {contact.busyDuringWork && <span style={{ marginLeft: "4px", color: "#cbd5e1" }}>· 9-5 busy</span>}
           </div>
         </div>
 
-        {/* Time */}
+        {/* Time + status */}
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontFamily: "'DM Sans', sans-serif", fontWeight: "600", fontSize: "13px", color: "#0f172a" }}>{time}</div>
           <div style={{ display: "flex", alignItems: "center", gap: "4px", justifyContent: "flex-end", marginTop: "2px" }}>
@@ -558,11 +664,49 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested }) {
 
       {expanded && (
         <div style={{ borderTop: "1px solid #f1f5f9", padding: "12px 15px 14px", background: isHighlighted ? "#eef2ff" : "#fafbff" }}>
+
+          {/* Sweet Spot */}
+          {sweetSpot ? (
+            <div style={{
+              background: "#f0fdf4", border: "1px solid #bbf7d0",
+              borderRadius: "8px", padding: "9px 12px", marginBottom: "11px",
+              display: "flex", alignItems: "center", gap: "7px",
+            }}>
+              <span style={{ fontSize: "13px" }}>🟢</span>
+              <div>
+                <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", fontWeight: "600", color: "#15803d" }}>
+                  Sweet spot: {sweetSpot.myStart}–{sweetSpot.myEnd} your time
+                </span>
+                <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "11px", color: "#86efac", marginLeft: "6px" }}>
+                  ({sweetSpot.theirStart}–{sweetSpot.theirEnd} their time · {sweetSpot.hours}h window)
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div style={{
+              background: "#fff7ed", border: "1px solid #fed7aa",
+              borderRadius: "8px", padding: "9px 12px", marginBottom: "11px",
+            }}>
+              <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#c2410c" }}>
+                ⚠️ No overlap today — try adjusting the time slider
+              </span>
+            </div>
+          )}
+
+          {/* Notes */}
           {contact.notes
             ? <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#475569", lineHeight: 1.65, margin: "0 0 11px", paddingLeft: "10px", borderLeft: "2px solid #c7d2fe" }}>{contact.notes}</p>
             : <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#cbd5e1", fontStyle: "italic", margin: "0 0 11px" }}>No notes yet.</p>
           }
-          <div style={{ display: "flex", gap: "8px" }}>
+
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button onClick={handleCopy} style={{
+              ...actionBtn(copied ? "#f0fdf4" : "#fff", copied ? "#16a34a" : "#6366f1", copied ? "#bbf7d0" : "#e0e7ff"),
+              display: "flex", alignItems: "center", gap: "5px"
+            }}>
+              {copied ? "✓ Copied!" : "📋 Copy message"}
+            </button>
             <button onClick={e => { e.stopPropagation(); onEdit(contact); }} style={actionBtn("#fff", "#475569", "#e2e8f0")}>Edit</button>
             <button onClick={e => { e.stopPropagation(); onDelete(contact.id); }} style={actionBtn("#fff", "#ef4444", "#fee2e2")}>Remove</button>
           </div>
@@ -572,30 +716,66 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested }) {
   );
 }
 
-const pill = (bg, color) => ({
-  fontSize: "10px", fontFamily: "'DM Sans', sans-serif", fontWeight: "600",
-  letterSpacing: "0.3px", background: bg, color, padding: "2px 7px",
-  borderRadius: "20px", textTransform: "uppercase",
-});
+// ─── Time-Travel Slider ───────────────────────────────────────────────────────
 
-const actionBtn = (bg, color, borderColor) => ({
-  padding: "6px 14px", border: `1px solid ${borderColor}`,
-  borderRadius: "6px", background: bg, cursor: "pointer",
-  fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color, fontWeight: "500",
-});
+function TimeSlider({ myTz, myCity, sliderHour, onChangeHour, onReset, isActive }) {
+  const fmt = h => {
+    if (h === 0) return "12:00 AM";
+    if (h === 12) return "12:00 PM";
+    return h > 12 ? `${h - 12}:00 PM` : `${h}:00 AM`;
+  };
+
+  return (
+    <div style={{
+      background: isActive ? "#f5f3ff" : "#fff",
+      border: `1px solid ${isActive ? "#c4b5fd" : "#f1f5f9"}`,
+      borderRadius: "10px", padding: "13px 16px", marginBottom: "12px",
+      transition: "all 0.2s",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: isActive ? "#7c3aed" : "#64748b", fontWeight: "500" }}>
+          {isActive ? (
+            <>⏱ If it's <strong style={{ color: "#4f46e5" }}>{fmt(sliderHour)}</strong> in {myCity}…</>
+          ) : (
+            <>⏱ Time travel — drag to see who's free later</>
+          )}
+        </div>
+        {isActive && (
+          <button onClick={onReset} style={{
+            background: "none", border: "1px solid #c4b5fd", borderRadius: "5px",
+            padding: "3px 9px", cursor: "pointer", fontSize: "11px",
+            fontFamily: "'DM Sans', sans-serif", color: "#7c3aed", fontWeight: "600",
+          }}>Reset to Now</button>
+        )}
+      </div>
+      <input
+        type="range" min={0} max={23} value={sliderHour}
+        onChange={e => onChangeHour(parseInt(e.target.value))}
+        style={{ width: "100%", accentColor: isActive ? "#6366f1" : "#cbd5e1", cursor: "pointer" }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px" }}>
+        {["12 AM","6 AM","12 PM","6 PM","11 PM"].map((l, i) => (
+          <span key={i} style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "10px", color: "#cbd5e1" }}>{l}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function Cousin() {
-  const [contacts, setContacts] = useState([]);
-  const [loaded, setLoaded] = useState(false);
-  const [modal, setModal] = useState(null);
+  const [contacts, setContacts]         = useState([]);
+  const [loaded, setLoaded]             = useState(false);
+  const [modal, setModal]               = useState(null);
   const [callNowContact, setCallNowContact] = useState(null);
-  const [tick, setTick] = useState(0);
-  const [myCity, setMyCity] = useState({ city: "San Francisco", tz: "America/Los_Angeles" });
-  const [editMyCity, setEditMyCity] = useState(false);
-  const [myCityQuery, setMyCityQuery] = useState("San Francisco");
+  const [tick, setTick]                 = useState(0);
+  const [myCity, setMyCity]             = useState({ city: "San Francisco", tz: "America/Los_Angeles" });
+  const [editMyCity, setEditMyCity]     = useState(false);
+  const [myCityQuery, setMyCityQuery]   = useState("San Francisco");
+  const [sliderHour, setSliderHour]     = useState(null); // null = use real time
 
+  // ── Storage ──
   useEffect(() => {
     function load() {
       try {
@@ -608,14 +788,35 @@ export default function Cousin() {
     }
     load();
   }, []);
-
   useEffect(() => { if (loaded) { try { localStorage.setItem("cousin-contacts", JSON.stringify(contacts)); } catch {} } }, [contacts, loaded]);
   useEffect(() => { if (loaded) { try { localStorage.setItem("cousin-mycity", JSON.stringify(myCity)); } catch {} } }, [myCity, loaded]);
   useEffect(() => { const iv = setInterval(() => setTick(t => t + 1), 30000); return () => clearInterval(iv); }, []);
 
+  // ── Simulated time (Time-Travel slider) ──
+  const realNow      = new Date();
+  const realMyHour   = getTimeAt(myCity.tz, realNow, "hour");
+  const effectiveSlider = sliderHour !== null ? sliderHour : realMyHour;
+  const simulatedNow = sliderHour !== null
+    ? new Date(realNow.getTime() + (sliderHour - realMyHour) * 3600000)
+    : realNow;
+  const sliderIsActive = sliderHour !== null && sliderHour !== realMyHour;
+
+  function handleSliderChange(h) {
+    setSliderHour(h);
+    // If Call Now contact is active, recompute it with new time
+    if (callNowContact) setCallNowContact(null);
+  }
+
+  function handleSliderReset() {
+    setSliderHour(null);
+  }
+
+  // ── Call Now logic ──
   function handleCallNow() {
     if (!contacts.length) return;
-    const pool = contacts.filter(c => isGoodTimeToCall(c.tz)).sort((a, b) => getCallScore(b.tz) - getCallScore(a.tz));
+    const pool = contacts
+      .filter(c => getCallStatus(c.tz, simulatedNow, c.busyDuringWork).green)
+      .sort((a, b) => getCallStatus(b.tz, simulatedNow, b.busyDuringWork).score - getCallStatus(a.tz, simulatedNow, a.busyDuringWork).score);
     const list = pool.length ? pool : [...contacts];
     if (!callNowContact) { setCallNowContact(list[0]); return; }
     const idx = list.findIndex(c => c.id === callNowContact.id);
@@ -635,9 +836,12 @@ export default function Cousin() {
     }
   }
 
-  const weekIds = getWeeklySuggestions(contacts, 3);
-  const callableCount = contacts.filter(c => isGoodTimeToCall(c.tz)).length;
-  const sortedContacts = [...contacts].sort((a, b) => getCallScore(b.tz) - getCallScore(a.tz));
+  const weekIds        = getWeeklySuggestions(contacts, 3);
+  const callableCount  = contacts.filter(c => getCallStatus(c.tz, simulatedNow, c.busyDuringWork).green).length;
+  const sortedContacts = [...contacts].sort((a, b) =>
+    getCallStatus(b.tz, simulatedNow, b.busyDuringWork).score -
+    getCallStatus(a.tz, simulatedNow, a.busyDuringWork).score
+  );
 
   return (
     <>
@@ -649,11 +853,12 @@ export default function Cousin() {
         ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
         @keyframes drop { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
         .drop { animation: drop 0.18s ease; }
+        input[type=range] { height: 4px; }
       `}</style>
 
       <div style={{ minHeight: "100vh", background: "#f8fafc", fontFamily: "'DM Sans', sans-serif" }}>
 
-        {/* Nav */}
+        {/* ── Nav ── */}
         <nav style={{
           background: "#fff", borderBottom: "1px solid #f1f5f9",
           padding: "0 24px", height: "56px",
@@ -669,7 +874,8 @@ export default function Cousin() {
                 display: "flex", alignItems: "center", gap: "5px",
               }}>
                 <span style={{ fontSize: "13px", color: "#64748b" }}>{myCity.city}</span>
-                <span style={{ fontSize: "13px", fontWeight: "600", color: "#334155" }}>{getLocalTime(myCity.tz)}</span>
+                <span style={{ fontSize: "13px", fontWeight: "600", color: "#334155" }}>{getTimeAt(myCity.tz, simulatedNow)}</span>
+                {sliderIsActive && <span style={{ fontSize: "10px", background: "#f5f3ff", color: "#7c3aed", padding: "1px 5px", borderRadius: "4px", fontWeight: "600" }}>simulated</span>}
                 <span style={{ fontSize: "11px", color: "#cbd5e1", marginLeft: "1px" }}>✎</span>
               </button>
             ) : (
@@ -684,19 +890,17 @@ export default function Cousin() {
               </div>
             )}
           </div>
-          <button
-            onClick={() => setModal("add")}
-            style={{
-              background: "#6366f1", border: "none", borderRadius: "7px",
-              padding: "7px 15px", cursor: "pointer", color: "#fff",
-              fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
-            }}
+          <button onClick={() => setModal("add")} style={{
+            background: "#6366f1", border: "none", borderRadius: "7px",
+            padding: "7px 15px", cursor: "pointer", color: "#fff",
+            fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
+          }}
             onMouseEnter={e => e.currentTarget.style.background = "#4f46e5"}
             onMouseLeave={e => e.currentTarget.style.background = "#6366f1"}
           >+ Add</button>
         </nav>
 
-        {/* Body */}
+        {/* ── Body ── */}
         <div style={{ maxWidth: "620px", margin: "0 auto", padding: "24px 16px" }}>
 
           {contacts.length === 0 ? (
@@ -721,20 +925,18 @@ export default function Cousin() {
             </div>
           ) : (
             <>
-              {/* Call Now bar */}
+              {/* ── Call Now bar ── */}
               <div style={{
                 background: "#fff", borderRadius: "10px", border: "1px solid #f1f5f9",
                 padding: "14px 16px", marginBottom: "12px",
                 display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap",
               }}>
-                <button
-                  onClick={handleCallNow}
-                  style={{
-                    background: "#6366f1", border: "none", borderRadius: "7px",
-                    padding: "8px 16px", cursor: "pointer", color: "#fff",
-                    fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
-                    flexShrink: 0, transition: "background 0.15s",
-                  }}
+                <button onClick={handleCallNow} style={{
+                  background: "#6366f1", border: "none", borderRadius: "7px",
+                  padding: "8px 16px", cursor: "pointer", color: "#fff",
+                  fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
+                  flexShrink: 0, transition: "background 0.15s",
+                }}
                   onMouseEnter={e => e.currentTarget.style.background = "#4f46e5"}
                   onMouseLeave={e => e.currentTarget.style.background = "#6366f1"}
                 >
@@ -752,19 +954,29 @@ export default function Cousin() {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: "600", fontSize: "14px", color: "#0f172a" }}>{callNowContact.name}</div>
                       <div style={{ fontSize: "12px", color: "#94a3b8" }}>
-                        {callNowContact.city} · {getLocalTime(callNowContact.tz)}
+                        {callNowContact.city} · {getTimeAt(callNowContact.tz, simulatedNow)}
                         {callNowContact.notes && <span style={{ color: "#c7d2fe" }}> · {callNowContact.notes.slice(0, 45)}{callNowContact.notes.length > 45 ? "…" : ""}</span>}
                       </div>
                     </div>
                   </div>
                 ) : (
                   <span style={{ fontSize: "13px", color: "#94a3b8" }}>
-                    {callableCount > 0 ? `${callableCount} contact${callableCount !== 1 ? "s" : ""} in a good window right now` : "Tap to get a time-zone-aware suggestion"}
+                    {callableCount > 0 ? `${callableCount} contact${callableCount !== 1 ? "s" : ""} in a good window right now` : "No one in a great window — adjust the slider"}
                   </span>
                 )}
               </div>
 
-              {/* Contact list */}
+              {/* ── Time-Travel Slider ── */}
+              <TimeSlider
+                myTz={myCity.tz}
+                myCity={myCity.city}
+                sliderHour={effectiveSlider}
+                onChangeHour={handleSliderChange}
+                onReset={handleSliderReset}
+                isActive={sliderIsActive}
+              />
+
+              {/* ── Contact list ── */}
               <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
                 {sortedContacts.map(c => (
                   <ContactRow
@@ -774,6 +986,10 @@ export default function Cousin() {
                     onDelete={handleDelete}
                     isHighlighted={callNowContact?.id === c.id}
                     isSuggested={weekIds.has(c.id)}
+                    simulatedNow={simulatedNow}
+                    realNow={realNow}
+                    myCity={myCity.city}
+                    myTz={myCity.tz}
                     tick={tick}
                   />
                 ))}
