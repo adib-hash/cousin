@@ -1058,21 +1058,25 @@ export default function Cousin() {
               </div>
             )}
           </div>
-          <button onClick={handleGroupToggle} style={{
-            background: groupMode ? "#eef2ff" : "#fff",
-            border: `1px solid ${groupMode ? "#c7d2fe" : "#e2e8f0"}`,
-            borderRadius: "7px", padding: "7px 13px", cursor: "pointer",
-            color: groupMode ? "#6366f1" : "#64748b",
-            fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
-          }}>👥 Group</button>
-          <button onClick={() => setModal("add")} style={{
-            background: "#6366f1", border: "none", borderRadius: "7px",
-            padding: "7px 15px", cursor: "pointer", color: "#fff",
-            fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
-          }}
-            onMouseEnter={e => e.currentTarget.style.background = "#4f46e5"}
-            onMouseLeave={e => e.currentTarget.style.background = "#6366f1"}
-          >+ Add</button>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <button onClick={handleGroupToggle} style={{
+              background: groupMode ? "#eef2ff" : "#fff",
+              border: `1px solid ${groupMode ? "#c7d2fe" : "#e2e8f0"}`,
+              borderRadius: "7px", padding: "7px 15px", cursor: "pointer",
+              color: groupMode ? "#6366f1" : "#64748b",
+              fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
+              lineHeight: "1",
+            }}>Group</button>
+            <button onClick={() => setModal("add")} style={{
+              background: "#6366f1", border: "none", borderRadius: "7px",
+              padding: "7px 15px", cursor: "pointer", color: "#fff",
+              fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
+              lineHeight: "1",
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = "#4f46e5"}
+              onMouseLeave={e => e.currentTarget.style.background = "#6366f1"}
+            >+ Add</button>
+          </div>
         </nav>
 
         {/* ── Body ── */}
