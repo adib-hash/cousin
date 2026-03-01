@@ -356,6 +356,67 @@ function getSweetSpot(myTz, contactTz, contactBusy, simulatedNow) {
   };
 }
 
+// Find best group call window across multiple contacts (+ me)
+// contacts: array of { tz, busyDuringWork }
+// Returns null or { startOffset, myStart, myEnd, perPersonTimes, hours }
+function getGroupWindow(myTz, contacts, simulatedNow) {
+  if (!contacts.length) return null;
+  const myH = getTimeAt(myTz, simulatedNow, "hour");
+
+  const slots = [];
+  for (let offset = 0; offset < 24; offset++) {
+    const t = new Date(simulatedNow.getTime() + offset * 3600000);
+    const myHour = (myH + offset) % 24;
+    const myFree = myHour >= 8 && myHour < 22;
+    const allFree = myFree && contacts.every(c => getCallStatus(c.tz, t, c.busyDuringWork).green);
+    slots.push({ offset, myHour, allFree });
+  }
+
+  // Find contiguous blocks
+  const blocks = [];
+  let cur = null;
+  for (const s of slots) {
+    if (s.allFree) {
+      if (!cur) cur = { startOffset: s.offset, startHour: s.myHour, len: 0 };
+      cur.len++;
+    } else {
+      if (cur) { blocks.push(cur); cur = null; }
+    }
+  }
+  if (cur) blocks.push(cur);
+  if (!blocks.length) return null;
+
+  // Best = longest, ties broken by proximity to 6 PM
+  const best = [...blocks].sort((a, b) => {
+    if (b.len !== a.len) return b.len - a.len;
+    return Math.abs(a.startHour - 18) - Math.abs(b.startHour - 18);
+  })[0];
+
+  const fmt = h => {
+    const norm = ((h % 24) + 24) % 24;
+    if (norm === 0) return "12 AM";
+    if (norm === 12) return "12 PM";
+    return norm > 12 ? `${norm - 12} PM` : `${norm} AM`;
+  };
+
+  const tStart = new Date(simulatedNow.getTime() + best.startOffset * 3600000);
+  const tEnd   = new Date(simulatedNow.getTime() + (best.startOffset + best.len) * 3600000);
+
+  const perPersonTimes = contacts.map(c => ({
+    name: c.name,
+    city: c.city,
+    start: fmt(getTimeAt(c.tz, tStart, "hour")),
+    end:   fmt(getTimeAt(c.tz, tEnd,   "hour")),
+  }));
+
+  return {
+    myStart: fmt(best.startHour),
+    myEnd:   fmt((best.startHour + best.len) % 24),
+    hours:   best.len,
+    perPersonTimes,
+  };
+}
+
 // Generate a one-tap copy message
 function buildCopyMessage(myCity, myTz, contactName, contactCity, contactTz, simulatedNow, realNow) {
   const myTimeStr     = getTimeAt(myTz, simulatedNow);
@@ -584,7 +645,7 @@ function ContactModal({ contact, onSave, onClose }) {
 
 // ─── Contact Row ──────────────────────────────────────────────────────────────
 
-function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, simulatedNow, realNow, myCity, myTz }) {
+function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, simulatedNow, realNow, myCity, myTz, groupMode, isGroupSelected, groupFull, onGroupSelect }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -593,6 +654,14 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
   const weekend   = isWeekend(contact.tz, simulatedNow);
   const sweetSpot = getSweetSpot(myTz, contact.tz, contact.busyDuringWork, simulatedNow);
   const av        = avatarColors(contact.name);
+
+  function handleRowClick() {
+    if (groupMode) {
+      if (!groupFull || isGroupSelected) onGroupSelect(contact.id);
+    } else {
+      setExpanded(e => !e);
+    }
+  }
 
   function handleCopy(e) {
     e.stopPropagation();
@@ -605,15 +674,28 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
 
   return (
     <div style={{
-      background: isHighlighted ? "#f0f0fe" : "#fff",
-      border: `1px solid ${isHighlighted ? "#c7d2fe" : "#f1f5f9"}`,
+      background: isGroupSelected ? "#f0f0fe" : isHighlighted ? "#f0f0fe" : "#fff",
+      border: `1px solid ${isGroupSelected ? "#6366f1" : isHighlighted ? "#c7d2fe" : "#f1f5f9"}`,
       borderRadius: "10px", transition: "border-color 0.15s",
-      opacity: status.dim ? 0.6 : 1,
+      opacity: groupFull ? 0.45 : status.dim ? 0.6 : 1,
     }}>
-      <div onClick={() => setExpanded(e => !e)} style={{
+      <div onClick={handleRowClick} style={{
         display: "flex", alignItems: "center", gap: "12px",
         padding: "13px 15px", cursor: "pointer", userSelect: "none",
       }}>
+        {/* Group mode checkbox */}
+        {groupMode && (
+          <div style={{
+            width: "18px", height: "18px", borderRadius: "50%", flexShrink: 0,
+            border: `2px solid ${isGroupSelected ? "#6366f1" : "#cbd5e1"}`,
+            background: isGroupSelected ? "#6366f1" : "transparent",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "all 0.15s",
+          }}>
+            {isGroupSelected && <span style={{ color: "#fff", fontSize: "10px", lineHeight: 1 }}>✓</span>}
+          </div>
+        )}
+
         {/* Avatar */}
         <div style={{
           width: "38px", height: "38px", borderRadius: "50%", flexShrink: 0,
@@ -659,10 +741,10 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
           </div>
         </div>
 
-        <div style={{ color: "#cbd5e1", fontSize: "11px", flexShrink: 0, transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.18s" }}>▾</div>
+        {!groupMode && <div style={{ color: "#cbd5e1", fontSize: "11px", flexShrink: 0, transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.18s" }}>▾</div>}
       </div>
 
-      {expanded && (
+      {!groupMode && expanded && (
         <div style={{ borderTop: "1px solid #f1f5f9", padding: "12px 15px 14px", background: isHighlighted ? "#eef2ff" : "#fafbff" }}>
 
           {/* Sweet Spot */}
@@ -762,6 +844,76 @@ function TimeSlider({ myTz, myCity, sliderHour, onChangeHour, onReset, isActive 
   );
 }
 
+// ─── Group Window Panel ───────────────────────────────────────────────────────
+
+function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, onClose }) {
+  const selectedContacts = contacts.filter(c => selected.has(c.id));
+  const result = getGroupWindow(myTz, selectedContacts, simulatedNow);
+
+  return (
+    <div style={{
+      background: "#fff", border: "1px solid #e0e7ff",
+      borderRadius: "10px", padding: "16px", marginBottom: "12px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600", color: "#4f46e5" }}>
+          👥 Group window — {selectedContacts.length} selected
+        </div>
+        <button onClick={onClose} style={{
+          background: "none", border: "none", cursor: "pointer",
+          fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#94a3b8",
+        }}>✕ Done</button>
+      </div>
+
+      {selected.size < 2 ? (
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#94a3b8", textAlign: "center", padding: "12px 0" }}>
+          Select at least 2 contacts below to find the best window
+        </div>
+      ) : result ? (
+        <>
+          <div style={{
+            background: "#f0fdf4", border: "1px solid #bbf7d0",
+            borderRadius: "8px", padding: "11px 14px", marginBottom: "10px",
+          }}>
+            <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "700", color: "#15803d", marginBottom: "6px" }}>
+              🟢 Best window: {result.myStart}–{result.myEnd} your time ({result.hours}h)
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
+                <span style={{ fontWeight: "600", color: "#0f172a" }}>You ({myCity})</span> — {result.myStart}–{result.myEnd}
+              </div>
+              {result.perPersonTimes.map((p, i) => (
+                <div key={i} style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{p.name} ({p.city})</span> — {p.start}–{p.end}
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div style={{
+          background: "#fff7ed", border: "1px solid #fed7aa",
+          borderRadius: "8px", padding: "11px 14px",
+          fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#c2410c",
+        }}>
+          ⚠️ No overlap found for this group — try the time slider to explore other windows
+        </div>
+      )}
+
+      {selected.size > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "10px" }}>
+          {selectedContacts.map(c => (
+            <div key={c.id} style={{
+              fontFamily: "'DM Sans', sans-serif", fontSize: "11px", fontWeight: "600",
+              background: "#eef2ff", color: "#6366f1", padding: "3px 8px", borderRadius: "20px",
+            }}>{c.name.split(" ")[0]}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function Cousin() {
@@ -774,6 +926,8 @@ export default function Cousin() {
   const [editMyCity, setEditMyCity]     = useState(false);
   const [myCityQuery, setMyCityQuery]   = useState("San Francisco");
   const [sliderHour, setSliderHour]     = useState(null); // null = use real time
+  const [groupMode, setGroupMode]       = useState(false);
+  const [groupSelected, setGroupSelected] = useState(new Set());
 
   // ── Storage ──
   useEffect(() => {
@@ -821,6 +975,20 @@ export default function Cousin() {
     if (!callNowContact) { setCallNowContact(list[0]); return; }
     const idx = list.findIndex(c => c.id === callNowContact.id);
     setCallNowContact(list[(idx + 1) % list.length]);
+  }
+
+  function handleGroupToggle() {
+    setGroupMode(g => !g);
+    setGroupSelected(new Set());
+  }
+
+  function handleGroupSelect(id) {
+    setGroupSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); }
+      else if (next.size < 4) { next.add(id); }
+      return next;
+    });
   }
 
   function handleSave(form) {
@@ -890,6 +1058,13 @@ export default function Cousin() {
               </div>
             )}
           </div>
+          <button onClick={handleGroupToggle} style={{
+            background: groupMode ? "#eef2ff" : "#fff",
+            border: `1px solid ${groupMode ? "#c7d2fe" : "#e2e8f0"}`,
+            borderRadius: "7px", padding: "7px 13px", cursor: "pointer",
+            color: groupMode ? "#6366f1" : "#64748b",
+            fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "600",
+          }}>👥 Group</button>
           <button onClick={() => setModal("add")} style={{
             background: "#6366f1", border: "none", borderRadius: "7px",
             padding: "7px 15px", cursor: "pointer", color: "#fff",
@@ -976,6 +1151,18 @@ export default function Cousin() {
                 isActive={sliderIsActive}
               />
 
+              {/* ── Group Window Panel ── */}
+              {groupMode && (
+                <GroupWindowPanel
+                  selected={groupSelected}
+                  contacts={contacts}
+                  myCity={myCity.city}
+                  myTz={myCity.tz}
+                  simulatedNow={simulatedNow}
+                  onClose={handleGroupToggle}
+                />
+              )}
+
               {/* ── Contact list ── */}
               <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
                 {sortedContacts.map(c => (
@@ -991,6 +1178,10 @@ export default function Cousin() {
                     myCity={myCity.city}
                     myTz={myCity.tz}
                     tick={tick}
+                    groupMode={groupMode}
+                    isGroupSelected={groupSelected.has(c.id)}
+                    groupFull={groupSelected.size >= 4 && !groupSelected.has(c.id)}
+                    onGroupSelect={handleGroupSelect}
                   />
                 ))}
               </div>
