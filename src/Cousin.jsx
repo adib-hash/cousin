@@ -800,13 +800,7 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
 
 // ─── Time-Travel Slider ───────────────────────────────────────────────────────
 
-function TimeSlider({ myTz, myCity, sliderHour, onChangeHour, onReset, isActive }) {
-  const fmt = h => {
-    if (h === 0) return "12:00 AM";
-    if (h === 12) return "12:00 PM";
-    return h > 12 ? `${h - 12}:00 PM` : `${h}:00 AM`;
-  };
-
+function TimeSlider({ myTz, myCity, sliderHour, simulatedNow, onChangeHour, onReset, isActive }) {
   return (
     <div style={{
       background: isActive ? "#f5f3ff" : "#fff",
@@ -817,7 +811,7 @@ function TimeSlider({ myTz, myCity, sliderHour, onChangeHour, onReset, isActive 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
         <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: isActive ? "#7c3aed" : "#64748b", fontWeight: "500" }}>
           {isActive ? (
-            <>⏱ If it's <strong style={{ color: "#4f46e5" }}>{fmt(sliderHour)}</strong> in {myCity}…</>
+            <>⏱ If it's <strong style={{ color: "#4f46e5" }}>{getTimeAt(myTz, simulatedNow)}</strong> in {myCity}…</>
           ) : (
             <>⏱ Time travel — drag to see who's free later</>
           )}
@@ -1175,6 +1169,7 @@ export default function Cousin() {
                 myTz={myCity.tz}
                 myCity={myCity.city}
                 sliderHour={effectiveSlider}
+                simulatedNow={simulatedNow}
                 onChangeHour={handleSliderChange}
                 onReset={handleSliderReset}
                 isActive={sliderIsActive}
