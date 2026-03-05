@@ -718,7 +718,6 @@ function ContactModal({ contact, onSave, onClose }) {
           </div>
         </div>
 
-        </div> {/* end scrollable body inner */}
         </div> {/* end scrollable body */}
 
         {/* ── Sticky footer ── */}
