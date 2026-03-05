@@ -551,25 +551,40 @@ function ContactModal({ contact, onSave, onClose }) {
     reader.readAsDataURL(file);
   }
 
+  // Lock background scroll while modal is open
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
   return (
     <div style={{
       position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)",
       display: "flex", alignItems: "center", justifyContent: "center",
-      zIndex: 1000, padding: "20px", backdropFilter: "blur(4px)",
+      zIndex: 1000, padding: "16px", backdropFilter: "blur(4px)",
+      overflowY: "auto",
     }} onClick={onClose}>
       <div style={{
-        background: "#fff", borderRadius: "16px", padding: "28px",
+        background: "#fff", borderRadius: "16px",
         width: "100%", maxWidth: "430px",
         boxShadow: "0 24px 60px rgba(0,0,0,0.13)",
+        display: "flex", flexDirection: "column",
+        maxHeight: "calc(100vh - 32px)", margin: "auto",
       }} onClick={e => e.stopPropagation()}>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "22px" }}>
+        {/* ── Sticky header ── */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "20px 22px 16px", borderBottom: "1px solid #f1f5f9", flexShrink: 0,
+        }}>
           <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "600", color: "#0f172a", fontFamily: "'DM Sans', sans-serif" }}>
             {contact ? "Edit contact" : "Add a loved one"}
           </h2>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: "22px", lineHeight: 1 }}>×</button>
         </div>
 
+        {/* ── Scrollable body ── */}
+        <div style={{ overflowY: "auto", padding: "18px 22px", WebkitOverflowScrolling: "touch" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "13px" }}>
 
           {[
@@ -703,7 +718,15 @@ function ContactModal({ contact, onSave, onClose }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+        </div> {/* end scrollable body inner */}
+        </div> {/* end scrollable body */}
+
+        {/* ── Sticky footer ── */}
+        <div style={{
+          display: "flex", gap: "10px", padding: "14px 22px",
+          borderTop: "1px solid #f1f5f9", flexShrink: 0,
+          background: "#fff", borderRadius: "0 0 16px 16px",
+        }}>
           <button onClick={onClose} style={{
             flex: 1, padding: "10px", border: "1px solid #e2e8f0",
             borderRadius: "8px", background: "#fff", cursor: "pointer",
