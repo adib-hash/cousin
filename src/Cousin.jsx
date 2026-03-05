@@ -433,13 +433,21 @@ function buildGroupCopyMessage(myCity, myTz, contacts, result, simulatedNow, rea
   const myDaySim = getDayShort(myTz, simulatedNow);
   const dayRef   = myDaySim === myDayNow ? "today" : "tomorrow";
 
-  // Build the per-person time list: "7 AM for Nan in Sylhet and 11 PM for Sharaf in London"
-  const parts = result.perPersonTimes.map(p => `${p.start} for ${p.name.split(" ")[0]} in ${p.city}`);
-  const theirTimes = parts.length === 1
-    ? parts[0]
-    : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
-
-  return `Hey everyone! I'm free ${dayRef} at ${result.myStart} (${myCity} time) — that's ${theirTimes}. Group call? 😊`;
+  if (result) {
+    // There's a known overlap window — reference it
+    const parts = result.perPersonTimes.map(p => `${p.start} for ${p.name.split(" ")[0]} in ${p.city}`);
+    const theirTimes = parts.length === 1
+      ? parts[0]
+      : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+    return `Hey everyone! I'm free ${dayRef} at ${result.myStart} (${myCity} time) — that's ${theirTimes}. Group call? 😊`;
+  } else {
+    // No overlap found — ask for availability instead, listing current local times
+    const parts = contacts.map(c => `${c.name.split(" ")[0]} (${getTimeAt(c.tz, simulatedNow)} in ${c.city})`);
+    const whoList = parts.length === 1
+      ? parts[0]
+      : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+    return `Hey everyone! Trying to find a time for a group call. Right now it's ${getTimeAt(myTz, simulatedNow)} for me in ${myCity}, ${whoList}. What windows work for you all? 😊`;
+  }
 }
 
 function getWeeklySuggestions(contacts, count = 3) {
@@ -1021,28 +1029,39 @@ function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, real
         <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#94a3b8", textAlign: "center", padding: "12px 0" }}>
           Select at least 2 contacts below to find the best window
         </div>
-      ) : result ? (
+      ) : (
         <>
-          <div style={{
-            background: "#f0fdf4", border: "1px solid #bbf7d0",
-            borderRadius: "8px", padding: "11px 14px", marginBottom: "10px",
-          }}>
-            <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "700", color: "#15803d", marginBottom: "6px" }}>
-              🟢 Best window: {result.myStart}–{result.myEnd} your time ({result.hours}h)
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
-                <span style={{ fontWeight: "600", color: "#0f172a" }}>You ({myCity})</span> — {result.myStart}–{result.myEnd}
+          {/* Overlap result or no-overlap warning */}
+          {result ? (
+            <div style={{
+              background: "#f0fdf4", border: "1px solid #bbf7d0",
+              borderRadius: "8px", padding: "11px 14px", marginBottom: "10px",
+            }}>
+              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", fontWeight: "700", color: "#15803d", marginBottom: "6px" }}>
+                🟢 Best window: {result.myStart}–{result.myEnd} your time ({result.hours}h)
               </div>
-              {result.perPersonTimes.map((p, i) => (
-                <div key={i} style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
-                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{p.name} ({p.city})</span> — {p.start}–{p.end}
+              <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>You ({myCity})</span> — {result.myStart}–{result.myEnd}
                 </div>
-              ))}
+                {result.perPersonTimes.map((p, i) => (
+                  <div key={i} style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "12px", color: "#64748b" }}>
+                    <span style={{ fontWeight: "600", color: "#0f172a" }}>{p.name} ({p.city})</span> — {p.start}–{p.end}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div style={{
+              background: "#fff7ed", border: "1px solid #fed7aa",
+              borderRadius: "8px", padding: "11px 14px", marginBottom: "10px",
+              fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#c2410c",
+            }}>
+              ⚠️ No overlap found for this group — try the time slider to explore other windows
+            </div>
+          )}
 
-          {/* Group copy button */}
+          {/* Copy button — always shown when 2+ selected */}
           <button onClick={handleGroupCopy} style={{
             width: "100%", padding: "9px 14px",
             border: `1px solid ${copied ? "#bbf7d0" : "#e0e7ff"}`,
@@ -1057,14 +1076,6 @@ function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, real
             {copied ? "✓ Copied to clipboard!" : "📋 Copy group message"}
           </button>
         </>
-      ) : (
-        <div style={{
-          background: "#fff7ed", border: "1px solid #fed7aa",
-          borderRadius: "8px", padding: "11px 14px",
-          fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#c2410c",
-        }}>
-          ⚠️ No overlap found for this group — try the time slider to explore other windows
-        </div>
       )}
 
       {selected.size > 0 && (
