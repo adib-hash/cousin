@@ -536,9 +536,20 @@ function ContactModal({ contact, onSave, onClose }) {
     relationship: contact?.relationship || "",
     notes: contact?.notes || "",
     busyDuringWork: contact?.busyDuringWork ?? false,
+    phone: contact?.phone || "",
+    instagram: contact?.instagram || "",
+    photoUrl: contact?.photoUrl || "",
   });
   const [citySearch, setCitySearch] = useState(contact?.city || "");
   const valid = form.name.trim() && form.tz;
+
+  function handlePhotoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setForm(f => ({ ...f, photoUrl: ev.target.result }));
+    reader.readAsDataURL(file);
+  }
 
   return (
     <div style={{
@@ -597,6 +608,78 @@ function ContactModal({ contact, onSave, onClose }) {
               rows={3} style={{ ...fieldStyle, resize: "vertical", lineHeight: 1.6 }}
               onFocus={e => e.target.style.borderColor = "#6366f1"}
               onBlur={e => e.target.style.borderColor = "#e2e8f0"} />
+          </div>
+
+          {/* Photo upload */}
+          <div>
+            <label style={mLabel}>Photo</label>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div style={{
+                width: "48px", height: "48px", borderRadius: "50%", flexShrink: 0,
+                overflow: "hidden", border: "2px solid #e2e8f0",
+                background: form.photoUrl ? "transparent" : "#f1f5f9",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                {form.photoUrl
+                  ? <img src={form.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : <span style={{ fontSize: "20px" }}>👤</span>
+                }
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{
+                  display: "inline-block", padding: "7px 14px",
+                  border: "1.5px solid #e2e8f0", borderRadius: "8px",
+                  cursor: "pointer", fontSize: "13px", color: "#475569",
+                  fontFamily: "'DM Sans', sans-serif", fontWeight: "500",
+                  background: "#fff",
+                }}>
+                  {form.photoUrl ? "Change photo" : "Upload photo"}
+                  <input type="file" accept="image/*" onChange={handlePhotoUpload}
+                    style={{ display: "none" }} />
+                </label>
+                {form.photoUrl && (
+                  <button onClick={() => setForm(f => ({ ...f, photoUrl: "" }))} style={{
+                    marginLeft: "8px", background: "none", border: "none",
+                    cursor: "pointer", fontSize: "12px", color: "#94a3b8",
+                    fontFamily: "'DM Sans', sans-serif",
+                  }}>Remove</button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Connect — reach-out links */}
+          <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: "13px" }}>
+            <label style={{ ...mLabel, marginBottom: "10px" }}>Quick reach-out <span style={{ color: "#cbd5e1", fontWeight: "400" }}>(optional)</span></label>
+            <div style={{ display: "flex", flexDirection: "column", gap: "9px" }}>
+              <div>
+                <label style={{ ...mLabel, fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.4px" }}>Phone / WhatsApp number</label>
+                <input value={form.phone}
+                  onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+                  placeholder="+1 415 555 0100"
+                  style={fieldStyle}
+                  onFocus={e => e.target.style.borderColor = "#6366f1"}
+                  onBlur={e => e.target.style.borderColor = "#e2e8f0"} />
+                <div style={{ marginTop: "3px", fontSize: "11px", color: "#cbd5e1", fontFamily: "'DM Sans', sans-serif" }}>
+                  Include country code · enables Call + WhatsApp buttons
+                </div>
+              </div>
+              <div>
+                <label style={{ ...mLabel, fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.4px" }}>Instagram handle</label>
+                <div style={{ position: "relative" }}>
+                  <span style={{
+                    position: "absolute", left: "11px", top: "50%", transform: "translateY(-50%)",
+                    color: "#94a3b8", fontFamily: "'DM Sans', sans-serif", fontSize: "14px",
+                  }}>@</span>
+                  <input value={form.instagram}
+                    onChange={e => setForm(f => ({ ...f, instagram: e.target.value.replace(/^@/, "") }))}
+                    placeholder="username"
+                    style={{ ...fieldStyle, paddingLeft: "26px" }}
+                    onFocus={e => e.target.style.borderColor = "#6366f1"}
+                    onBlur={e => e.target.style.borderColor = "#e2e8f0"} />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Busy during work/school hours toggle */}
@@ -699,12 +782,15 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
         {/* Avatar */}
         <div style={{
           width: "38px", height: "38px", borderRadius: "50%", flexShrink: 0,
-          background: av.bg, color: av.fg,
+          background: contact.photoUrl ? "transparent" : av.bg, color: av.fg,
           display: "flex", alignItems: "center", justifyContent: "center",
           fontFamily: "'DM Sans', sans-serif", fontWeight: "700", fontSize: "13px",
-          position: "relative",
+          position: "relative", overflow: "hidden", border: contact.photoUrl ? "2px solid #e2e8f0" : "none",
         }}>
-          {initials(contact.name)}
+          {contact.photoUrl
+            ? <img src={contact.photoUrl} alt={contact.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            : initials(contact.name)
+          }
           {isHighlighted && (
             <div style={{
               position: "absolute", bottom: -1, right: -1,
@@ -781,14 +867,40 @@ function ContactRow({ contact, onEdit, onDelete, isHighlighted, isSuggested, sim
             : <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "13px", color: "#cbd5e1", fontStyle: "italic", margin: "0 0 11px" }}>No notes yet.</p>
           }
 
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          {/* Reach-out buttons */}
+          <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "9px" }}>
+            {contact.phone && (
+              <a href={`tel:${contact.phone.replace(/\s/g,"")}`}
+                onClick={e => e.stopPropagation()}
+                style={{ ...actionBtn("#f0fdf4", "#15803d", "#bbf7d0"), textDecoration: "none", display: "flex", alignItems: "center", gap: "5px" }}>
+                📞 Call
+              </a>
+            )}
+            {contact.phone && (
+              <a href={`https://wa.me/${contact.phone.replace(/[\s\-\+\(\)]/g,"")}`}
+                target="_blank" rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                style={{ ...actionBtn("#f0fdf4", "#15803d", "#bbf7d0"), textDecoration: "none", display: "flex", alignItems: "center", gap: "5px" }}>
+                💬 WhatsApp
+              </a>
+            )}
+            {contact.instagram && (
+              <a href={`https://instagram.com/${contact.instagram}`}
+                target="_blank" rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                style={{ ...actionBtn("#fdf4ff", "#7e22ce", "#e9d5ff"), textDecoration: "none", display: "flex", alignItems: "center", gap: "5px" }}>
+                📷 Instagram
+              </a>
+            )}
             <button onClick={handleCopy} style={{
               ...actionBtn(copied ? "#f0fdf4" : "#fff", copied ? "#16a34a" : "#6366f1", copied ? "#bbf7d0" : "#e0e7ff"),
               display: "flex", alignItems: "center", gap: "5px"
             }}>
               {copied ? "✓ Copied!" : "📋 Copy message"}
             </button>
+          </div>
+          {/* Edit / Remove */}
+          <div style={{ display: "flex", gap: "7px" }}>
             <button onClick={e => { e.stopPropagation(); onEdit(contact); }} style={actionBtn("#fff", "#475569", "#e2e8f0")}>Edit</button>
             <button onClick={e => { e.stopPropagation(); onDelete(contact.id); }} style={actionBtn("#fff", "#ef4444", "#fee2e2")}>Remove</button>
           </div>
@@ -1144,11 +1256,17 @@ export default function Cousin() {
                 {callNowContact ? (
                   <div className="drop" style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
                     <div style={{
-                      ...avatarColors(callNowContact.name),
+                      ...(callNowContact.photoUrl ? {} : avatarColors(callNowContact.name)),
                       width: "32px", height: "32px", borderRadius: "50%",
                       display: "flex", alignItems: "center", justifyContent: "center",
                       fontFamily: "'DM Sans', sans-serif", fontWeight: "700", fontSize: "12px", flexShrink: 0,
-                    }}>{initials(callNowContact.name)}</div>
+                      overflow: "hidden", border: callNowContact.photoUrl ? "2px solid #e2e8f0" : "none",
+                    }}>
+                      {callNowContact.photoUrl
+                        ? <img src={callNowContact.photoUrl} alt={callNowContact.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                        : initials(callNowContact.name)
+                      }
+                    </div>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: "600", fontSize: "14px", color: "#0f172a" }}>{callNowContact.name}</div>
                       <div style={{ fontSize: "12px", color: "#94a3b8" }}>
