@@ -428,6 +428,20 @@ function buildCopyMessage(myCity, myTz, contactName, contactCity, contactTz, sim
   return `Hey ${firstName}! Thinking of you and wanted to catch up. I'm free ${dayRef} at ${myTimeStr} (${myCity} time) — that's ${theirTimeStr} for you in ${contactCity}. Does that work? 😊`;
 }
 
+function buildGroupCopyMessage(myCity, myTz, contacts, result, simulatedNow, realNow) {
+  const myDayNow = getDayShort(myTz, realNow);
+  const myDaySim = getDayShort(myTz, simulatedNow);
+  const dayRef   = myDaySim === myDayNow ? "today" : "tomorrow";
+
+  // Build the per-person time list: "7 AM for Nan in Sylhet and 11 PM for Sharaf in London"
+  const parts = result.perPersonTimes.map(p => `${p.start} for ${p.name.split(" ")[0]} in ${p.city}`);
+  const theirTimes = parts.length === 1
+    ? parts[0]
+    : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+
+  return `Hey everyone! I'm free ${dayRef} at ${result.myStart} (${myCity} time) — that's ${theirTimes}. Group call? 😊`;
+}
+
 function getWeeklySuggestions(contacts, count = 3) {
   if (!contacts.length) return new Set();
   const weekSeed = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
@@ -974,9 +988,19 @@ function TimeSlider({ myTz, myCity, sliderHour, simulatedNow, onChangeHour, onRe
 
 // ─── Group Window Panel ───────────────────────────────────────────────────────
 
-function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, onClose }) {
+function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, realNow, onClose }) {
+  const [copied, setCopied] = useState(false);
   const selectedContacts = contacts.filter(c => selected.has(c.id));
   const result = getGroupWindow(myTz, selectedContacts, simulatedNow);
+
+  function handleGroupCopy() {
+    if (!result) return;
+    const msg = buildGroupCopyMessage(myCity, myTz, selectedContacts, result, simulatedNow, realNow);
+    navigator.clipboard.writeText(msg).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  }
 
   return (
     <div style={{
@@ -1017,6 +1041,21 @@ function GroupWindowPanel({ selected, contacts, myCity, myTz, simulatedNow, onCl
               ))}
             </div>
           </div>
+
+          {/* Group copy button */}
+          <button onClick={handleGroupCopy} style={{
+            width: "100%", padding: "9px 14px",
+            border: `1px solid ${copied ? "#bbf7d0" : "#e0e7ff"}`,
+            borderRadius: "8px",
+            background: copied ? "#f0fdf4" : "#fafbff",
+            cursor: "pointer", display: "flex", alignItems: "center",
+            justifyContent: "center", gap: "6px",
+            fontFamily: "'DM Sans', sans-serif", fontSize: "13px",
+            fontWeight: "600", color: copied ? "#15803d" : "#6366f1",
+            transition: "all 0.15s",
+          }}>
+            {copied ? "✓ Copied to clipboard!" : "📋 Copy group message"}
+          </button>
         </>
       ) : (
         <div style={{
@@ -1323,6 +1362,7 @@ export default function Cousin() {
                   myCity={myCity.city}
                   myTz={myCity.tz}
                   simulatedNow={simulatedNow}
+                  realNow={realNow}
                   onClose={handleGroupToggle}
                 />
               )}
